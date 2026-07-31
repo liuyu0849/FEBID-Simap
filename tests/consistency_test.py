@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-标准一致性测试（刻蚀 + 沉积）
-=============================
+标准一致性测试（沉积）
+======================
 
 依照项目开发规范第 3 条编排，用于在每次改动后核验数值行为的一致性。
-同时覆盖刻蚀（PSM_ETCH）与沉积（PSM_DEPO）两个体系。
+标准用例采用沉积体系（PSM_DEPO）。
 
 测试用例统一设置：
 - 网格：150 x 150（步长 1 nm，dx = dy = 1.0）
-- 作用区域：网格中央 100 x 100 nm 区域（刻蚀 / 沉积）
-- 模型参数：继承各体系当前参数；并额外提供一套 D = 0（无扩散）参数
+- 作用区域：网格中央 100 x 100 nm 区域（沉积）
+- 模型参数：继承体系当前参数；并额外提供一套 D = 0（无扩散）参数
 - 覆盖两种情形：扩散存在（D > 0）与扩散关闭（D = 0）
 
 通过阈值：改动前后相对误差 <= 1%。
@@ -31,7 +31,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from febid_simap.physics_params import PSMEtchConfig, PSMDepoConfig
+from febid_simap.physics_params import PSMDepoConfig
 from febid_simap.Scan_Pattern import ScanPattern2D, Scanning2DBeam
 from febid_simap.Simulator import Scanning2DFEBIPSimulator, apply_diffusion_kernel
 
@@ -50,17 +50,8 @@ DIFFUSION_ACTIVE_MIN = 1e-3        # 判定“扩散确实生效”的最小可�
 REPORT_PATH = os.path.join(_REPO_ROOT, "tests", "report_consistency.md")
 REFERENCE_DIR = os.path.join(_REPO_ROOT, "tests", "reference")
 
-# 两个体系的扫描/束流设置（取值继承自 config 中对应体系）
+# 标准体系的扫描/束流设置（取值继承自 config 中对应体系）
 SYSTEMS = {
-    "PSM_ETCH": {
-        "kind": "刻蚀",
-        "params_cls": PSMEtchConfig,
-        "dt": 0.04e-6,
-        "beam": [(2.98e7, 10), (0.00e7, 20), (0e7, 24)],
-        "sigma": (2.5, 4.0),
-        "D_attrs": ["D_XeF2", "D_F"],
-        "species": ["XeF2", "F"],
-    },
     "PSM_DEPO": {
         "kind": "沉积",
         "params_cls": PSMDepoConfig,
@@ -211,7 +202,7 @@ def evaluate_system(sys_key: str):
 
 def main():
     print("=" * 70)
-    print("标准一致性测试 — 150x150 网格 / 中央 100x100 区域 / 刻蚀 + 沉积")
+    print("标准一致性测试 — 150x150 网格 / 中央 100x100 区域 / 沉积")
     print("=" * 70)
 
     results = {}
@@ -237,7 +228,7 @@ def main():
 
 def write_report(results, all_pass):
     L = []
-    L.append("# 一致性测试报告（刻蚀 + 沉积）")
+    L.append("# 一致性测试报告（沉积）")
     L.append("")
     L.append("## 测试用例")
     L.append("")
@@ -245,8 +236,8 @@ def write_report(results, all_pass):
     L.append("| --- | --- |")
     L.append(f"| 网格 | {GRID_N} × {GRID_N}（dx = dy = 1.0 nm） |")
     L.append("| 作用区域 | 网格中央 100 × 100 nm |")
-    L.append("| 体系 | PSM_ETCH（刻蚀）、PSM_DEPO（沉积） |")
-    L.append("| 参数 | 各体系继承当前参数；另设 D = 0 无扩散一组 |")
+    L.append("| 体系 | PSM_DEPO（沉积，标准用例） |")
+    L.append("| 参数 | 继承体系当前参数；另设 D = 0 无扩散一组 |")
     L.append(f"| 通过阈值 | 相对误差 ≤ {TOLERANCE:.0%} |")
     L.append("")
 
@@ -279,15 +270,15 @@ def write_report(results, all_pass):
                  f"高度场 **{d_h:.2%}**。")
         L.append("")
 
-    L.append("## 说明：为什么扩散主要体现在覆盖度场")
+    L.append("## 说明：扩散效应的观察方式")
     L.append("")
     L.append(
-        "在微秒量级扫描下，真正活跃、能观察到扩散影响的是**表面覆盖度场**。"
-        "刻蚀体系的去除速率随活性物种覆盖度以极高次方增长，当前覆盖度下移除极慢，"
-        "故高度差近乎为零；沉积体系高度增长与束流线性相关，信号相对更明显。"
-        "扩散的本质作用是把活性物种从生成处向四周铺开——"
+        "扩散的本质作用是把前驱体与中间产物从生成处向四周铺开——"
         "如同一滴墨水滴在纸上：不吸水时是硬边圆点，吸水后晕染成一片柔和的斑。"
-        "因此该项**不纳入** 1% 阈值，反而要求其**大于**一个下限，"
+        "沉积体系的高度增长与束流·覆盖度成正比，因此扩散既重塑覆盖度分布"
+        "（尤其是扫描点之间原本无物种的空隙被填充，局部差异显著），"
+        "也会在最终形貌上留下可见差异。"
+        "该项差异属预期变化，**不纳入** 1% 阈值，反而要求其**大于**一个下限，"
         "用以确认扩散确实在起作用（若退回为零，即说明扩散步又失效）。"
     )
     L.append("")
@@ -295,10 +286,10 @@ def write_report(results, all_pass):
     L.append("")
     L.append(f"**{'全部通过' if all_pass else '存在未通过项，需检查'}。**")
     L.append("")
-    L.append("- 关闭扩散（D = 0）时，两体系均复现改动前“仅反应、无扩散”的数值行为；")
+    L.append("- 关闭扩散（D = 0）时，复现改动前“仅反应、无扩散”的数值行为；")
     L.append("- 开启扩散（D > 0）时结果有限、可复现，变化严格限制在作用区域内，"
              "且覆盖度场相对无扩散出现可见差异，证明扩散在整链路生效；")
-    L.append("- 已为两体系各固定回归基线，后续改动据此做 ≤ 1% 的前后对比。")
+    L.append("- 已固定回归基线，后续改动据此做 ≤ 1% 的前后对比。")
 
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")

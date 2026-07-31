@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-性能基准与优化分析（刻蚀 + 沉积）
-=================================
+性能基准与优化分析（沉积）
+==========================
 
 依照项目开发规范第 5 条编排：以最原始的可运行基线为参照，逐项列出各计算步骤
 耗时，对比当前性能，列出前三项性能卡点与优化目标。
@@ -11,7 +11,7 @@
   计算代码未再改动；本次唯一改写到计算路径的是“扩散步”（由 numpy 路线改为
   numba 融合内核），故对该步做 head-to-head 对比以量化提升。
 - 逐步骤耗时：在 150×150 网格上分别测量“通量图 / 反应步 / 扩散步”的每步耗时。
-- 同时覆盖刻蚀（PSM_ETCH）与沉积（PSM_DEPO）。
+- 体系随一致性测试的标准体系表（当前为沉积 PSM_DEPO）。
 
 运行方式：
     cd /home/user/FEBID-Simap
@@ -131,7 +131,7 @@ def bench_diffusion_step(n: int = 800):
 
 def main():
     print("=" * 70)
-    print("性能基准 — 150x150 网格 / 刻蚀 + 沉积")
+    print("性能基准 — 150x150 网格 / 沉积")
     print("=" * 70)
 
     results = {k: bench_pipeline(k) for k in SYSTEMS}
@@ -156,8 +156,10 @@ def write_report(results, t_numba, t_numpy):
     avg = {s: np.mean([results[k][s] / results[k]["total"] for k in results]) for s in stages}
     ranking = sorted(stages, key=lambda s: avg[s], reverse=True)
 
+    kinds = "、".join(f"{k}（{SYSTEMS[k]['kind']}）" for k in results)
+
     L = []
-    L.append("# 性能基准与优化分析（刻蚀 + 沉积）")
+    L.append("# 性能基准与优化分析（沉积）")
     L.append("")
     L.append(f"参照基线：项目首个可运行版本（commit `{BASELINE_COMMIT}`）。"
              "自该版本起 `febid_simap` 的计算代码未再改动，因此“反应步 / 通量图 / 快照”"
@@ -171,18 +173,20 @@ def write_report(results, t_numba, t_numpy):
     L.append(f"| 网格 | {GRID_N} × {GRID_N} |")
     L.append("| 束流 | 固定于激活位置，逐阶段计时 |")
     L.append("| 预热 | 先触发全部 JIT 编译，再计时 |")
-    L.append("| 体系 | PSM_ETCH（刻蚀）、PSM_DEPO（沉积） |")
+    L.append(f"| 体系 | {kinds} |")
     L.append("")
     L.append("## 各计算步骤每步耗时")
     L.append("")
-    L.append("| 步骤 | PSM_ETCH (us) | 占比 | PSM_DEPO (us) | 占比 |")
-    L.append("| --- | --- | --- | --- | --- |")
+    keys = list(results.keys())
+    L.append("| 步骤 | " + " | ".join(f"{k} (us) | 占比" for k in keys) + " |")
+    L.append("| --- |" + " --- | --- |" * len(keys))
     for s in stages:
-        e, d = results["PSM_ETCH"], results["PSM_DEPO"]
-        L.append(f"| {label[s]} | {e[s]:.2f} | {e[s]/e['total']:.0%} | "
-                 f"{d[s]:.2f} | {d[s]/d['total']:.0%} |")
-    e, d = results["PSM_ETCH"], results["PSM_DEPO"]
-    L.append(f"| **合计（每步）** | **{e['total']:.2f}** | 100% | **{d['total']:.2f}** | 100% |")
+        cells = " | ".join(
+            f"{results[k][s]:.2f} | {results[k][s]/results[k]['total']:.0%}" for k in keys
+        )
+        L.append(f"| {label[s]} | {cells} |")
+    totals = " | ".join(f"**{results[k]['total']:.2f}** | 100%" for k in keys)
+    L.append(f"| **合计（每步）** | {totals} |")
     L.append("")
     L.append("## 扩散步：对比原版提升")
     L.append("")
