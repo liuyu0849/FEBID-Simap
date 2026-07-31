@@ -69,6 +69,83 @@ def apply_diffusion_kernel(field, lap_buffer, D_dt, dx, dy, mask):
                 field[i, j] = max(val, 0.0)
 
 
+# ========== Numba 隐式 ADI 扩散内核（Peaceman-Rachford，无条件稳定）==========
+@jit(nopython=True, parallel=True)
+def apply_diffusion_adi(field, ustar, D_dt, dx, dy, mask):
+    """隐式 ADI 扩散步：显式稳定域之外（D_dt > 0.25·dx²）仍保持稳定。
+
+    半步1: (I - rx·δxx) u* = (I + ry·δyy) u   （x 方向隐式，逐行三对角求解）
+    半步2: (I - ry·δyy) u  = (I + rx·δxx) u*  （y 方向隐式，逐列三对角求解）
+    边界为零通量（与显式内核一致）；更新语义同显式内核：全场求解，
+    仅写回掩模内的点，并作非负截断。
+    """
+    ny, nx = field.shape
+    rx = 0.5 * D_dt / (dx * dx)
+    ry = 0.5 * D_dt / (dy * dy)
+
+    # 三对角消元系数各行/各列相同，预先算好（Thomas 算法前向系数）
+    wx = np.empty(nx)
+    cpx = np.empty(nx)
+    wx[0] = 1.0 / (1.0 + rx)
+    cpx[0] = -rx * wx[0]
+    for j in range(1, nx):
+        bj = 1.0 + 2.0 * rx if j < nx - 1 else 1.0 + rx
+        wx[j] = 1.0 / (bj + rx * cpx[j - 1])
+        cpx[j] = -rx * wx[j]
+
+    wy = np.empty(ny)
+    cpy = np.empty(ny)
+    wy[0] = 1.0 / (1.0 + ry)
+    cpy[0] = -ry * wy[0]
+    for i in range(1, ny):
+        bi = 1.0 + 2.0 * ry if i < ny - 1 else 1.0 + ry
+        wy[i] = 1.0 / (bi + ry * cpy[i - 1])
+        cpy[i] = -ry * wy[i]
+
+    # 半步1：x 隐式（并行遍历行）
+    for i in prange(ny):
+        dp = np.empty(nx)
+        for j in range(nx):
+            if i == 0:
+                lap_y = field[1, j] - field[0, j]
+            elif i == ny - 1:
+                lap_y = field[ny - 2, j] - field[ny - 1, j]
+            else:
+                lap_y = field[i + 1, j] - 2.0 * field[i, j] + field[i - 1, j]
+            rhs = field[i, j] + ry * lap_y
+            if j == 0:
+                dp[0] = rhs * wx[0]
+            else:
+                dp[j] = (rhs + rx * dp[j - 1]) * wx[j]
+        ustar[i, nx - 1] = dp[nx - 1]
+        for j in range(nx - 2, -1, -1):
+            ustar[i, j] = dp[j] - cpx[j] * ustar[i, j + 1]
+
+    # 半步2：y 隐式（并行遍历列），结果写回掩模内并截断非负
+    for j in prange(nx):
+        dp = np.empty(ny)
+        for i in range(ny):
+            if j == 0:
+                lap_x = ustar[i, 1] - ustar[i, 0]
+            elif j == nx - 1:
+                lap_x = ustar[i, nx - 2] - ustar[i, nx - 1]
+            else:
+                lap_x = ustar[i, j + 1] - 2.0 * ustar[i, j] + ustar[i, j - 1]
+            rhs = ustar[i, j] + rx * lap_x
+            if i == 0:
+                dp[0] = rhs * wy[0]
+            else:
+                dp[i] = (rhs + ry * dp[i - 1]) * wy[i]
+        prev = dp[ny - 1]
+        if mask[ny - 1, j]:
+            field[ny - 1, j] = max(prev, 0.0)
+        for i in range(ny - 2, -1, -1):
+            xi = dp[i] - cpy[i] * prev
+            if mask[i, j]:
+                field[i, j] = max(xi, 0.0)
+            prev = xi
+
+
 class Scanning2DFEBIPSimulator:
     """通用 FEBIP 模拟器（支持任意刻蚀/沉积模型）"""
 
@@ -146,18 +223,30 @@ class Scanning2DFEBIPSimulator:
             self.state_field, self.h_material, flux_map, dt, self.etch_region_mask
         )
 
-        # 2. 扩散演化 (使用 Numba 融合内核原地更新)
+        # 2. 扩散演化：显式稳定域内走原显式内核（数值不变）；
+        #    超出稳定域（D_dt·(1/dx²+1/dy²) > 1/2）自动切换隐式 ADI，保持无条件稳定
+        explicit_limit = 0.5 / (1.0 / (self.dx * self.dx) + 1.0 / (self.dy * self.dy))
         for i in range(self.model.num_species):
             if self.D_array[i] > 0:
                 D_dt = self.D_array[i] * dt
-                apply_diffusion_kernel(
-                    self.state_field[i],
-                    self._lap_buffer,
-                    D_dt,
-                    self.dx,
-                    self.dy,
-                    self.etch_region_mask,
-                )
+                if D_dt <= explicit_limit:
+                    apply_diffusion_kernel(
+                        self.state_field[i],
+                        self._lap_buffer,
+                        D_dt,
+                        self.dx,
+                        self.dy,
+                        self.etch_region_mask,
+                    )
+                else:
+                    apply_diffusion_adi(
+                        self.state_field[i],
+                        self._lap_buffer,
+                        D_dt,
+                        self.dx,
+                        self.dy,
+                        self.etch_region_mask,
+                    )
 
     def run_scanning(
         self,
