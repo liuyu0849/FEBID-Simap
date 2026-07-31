@@ -160,6 +160,11 @@ class Scanning2DBeam:
         self._precompute_time_boundaries()
         self._cache_subloop_id = 0
 
+        # 驻留时刻累计表预计算与束斑图缓存（数值结果与逐步计算完全一致）
+        self._cum_dwell = np.cumsum(self.dwell_times)
+        self._flux_cache = None
+        self._flux_cache_idx = -1
+
     def _expand_loops(self):
         if self.n_loops == 1:
             self.scan_path, self.dwell_times = (
@@ -209,6 +214,7 @@ class Scanning2DBeam:
                     "end_time": current_time + total_time,
                     "point_indices": np.where(mask)[0],
                     "dwell_times": dwells,
+                    "cum_dwell": np.cumsum(dwells),
                     "n_points": len(dwells),
                 }
             )
@@ -219,7 +225,7 @@ class Scanning2DBeam:
             return None, False
 
         if self.frt is None:
-            idx = np.searchsorted(np.cumsum(self.dwell_times), t, side="right")
+            idx = np.searchsorted(self._cum_dwell, t, side="right")
             return min(idx, self.n_points - 1), False
 
         if (
@@ -245,7 +251,7 @@ class Scanning2DBeam:
             return b["point_indices"][-1], True
 
         idx = min(
-            np.searchsorted(np.cumsum(b["dwell_times"]), t_sub, side="right"),
+            np.searchsorted(b["cum_dwell"], t_sub, side="right"),
             b["n_points"] - 1,
         )
         return b["point_indices"][idx], False
@@ -273,12 +279,23 @@ class Scanning2DBeam:
         """
         if out is None:
             out = np.zeros_like(X)
-        else:
-            out.fill(0.0)  # 原地清零
 
-        pos, active = self.get_beam_position(t)
-        if not active:
+        idx, waiting = self._time_to_point_index(t)
+        if idx is None or waiting:
+            out.fill(0.0)
             return out
+
+        # 束在同一扫描点停留期间光斑不变：命中缓存则整幅复制，免去重画
+        if (
+            self._flux_cache is not None
+            and self._flux_cache_idx == idx
+            and self._flux_cache.shape == out.shape
+        ):
+            np.copyto(out, self._flux_cache)
+            return out
+
+        out.fill(0.0)
+        pos = self.scan_path[idx]
 
         # 提取 1D 坐标供给 Numba 寻址
         X_row = X[0, :]
@@ -288,5 +305,10 @@ class Scanning2DBeam:
         _compute_flux_map_local_numba(
             X_row, Y_col, pos[0], pos[1], self._gauss_f0, self._gauss_sig, out
         )
+
+        if self._flux_cache is None or self._flux_cache.shape != out.shape:
+            self._flux_cache = np.empty_like(out)
+        np.copyto(self._flux_cache, out)
+        self._flux_cache_idx = idx
 
         return out

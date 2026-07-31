@@ -314,8 +314,13 @@ class COGModel(BaseSurfaceModel):
         mask: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """应用 COG 反应步骤"""
-        # 应用掩模
-        flux_map_masked = flux_map * mask
+        # 应用掩模（掩模在仿真过程中不变：浮点掩模与乘积缓冲只建一次，逐步复用）
+        mask_f = getattr(self, "_mask_f64", None)
+        if mask_f is None or mask_f.shape != mask.shape:
+            self._mask_f64 = mask_f = mask.astype(np.float64)
+            self._masked_flux = np.empty_like(mask_f)
+        np.multiply(flux_map, mask_f, out=self._masked_flux)
+        flux_map_masked = self._masked_flux
 
         # 解包浓度场
         n_H2O, n_XeF2, n_OH, n_F, n_H, n_CrO2, n_CrO2F2 = state_field
@@ -357,10 +362,8 @@ class COGModel(BaseSurfaceModel):
             self.params.V_material,
         )
 
-        # 重新打包浓度场
-        state_field_new = np.array([n_H2O, n_XeF2, n_OH, n_F, n_H, n_CrO2, n_CrO2F2])
-
-        return state_field_new, h_material
+        # 内核经由解包视图原地写回 state_field，无需重新打包复制
+        return state_field, h_material
 
 
 # ================================================================================
@@ -406,8 +409,13 @@ class PSMModel(BaseSurfaceModel):
         mask: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """应用 PSM 反应步骤"""
-        # 应用掩模
-        flux_map_masked = flux_map * mask
+        # 应用掩模（掩模在仿真过程中不变：浮点掩模与乘积缓冲只建一次，逐步复用）
+        mask_f = getattr(self, "_mask_f64", None)
+        if mask_f is None or mask_f.shape != mask.shape:
+            self._mask_f64 = mask_f = mask.astype(np.float64)
+            self._masked_flux = np.empty_like(mask_f)
+        np.multiply(flux_map, mask_f, out=self._masked_flux)
+        flux_map_masked = self._masked_flux
 
         # 解包浓度场
         n_XeF2, n_F = state_field
@@ -431,10 +439,8 @@ class PSMModel(BaseSurfaceModel):
             self.params.V_material,
         )
 
-        # 重新打包浓度场
-        state_field_new = np.array([n_XeF2, n_F])
-
-        return state_field_new, h_material
+        # 内核经由解包视图原地写回 state_field，无需重新打包复制
+        return state_field, h_material
 
 
 # ================================================================================
@@ -480,8 +486,13 @@ class PSMDepoModel(BaseSurfaceModel):
         mask: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """应用 PSM 沉积反应步骤"""
-        # 应用掩模
-        flux_map_masked = flux_map * mask
+        # 应用掩模（掩模在仿真过程中不变：浮点掩模与乘积缓冲只建一次，逐步复用）
+        mask_f = getattr(self, "_mask_f64", None)
+        if mask_f is None or mask_f.shape != mask.shape:
+            self._mask_f64 = mask_f = mask.astype(np.float64)
+            self._masked_flux = np.empty_like(mask_f)
+        np.multiply(flux_map, mask_f, out=self._masked_flux)
+        flux_map_masked = self._masked_flux
 
         # 解包浓度场
         n_CrCO6, n_CO = state_field
@@ -508,10 +519,8 @@ class PSMDepoModel(BaseSurfaceModel):
             self.params.V_C,
         )
 
-        # 重新打包浓度场
-        state_field_new = np.array([n_CrCO6, n_CO])
-
-        return state_field_new, h_material
+        # 内核经由解包视图原地写回 state_field，无需重新打包复制
+        return state_field, h_material
 
 
 # ================================================================================
