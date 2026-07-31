@@ -7,9 +7,9 @@
 依照项目开发规范第 5 条编排：以最原始的可运行基线为参照，逐项列出各计算步骤
 耗时，对比当前性能，列出前三项性能卡点与优化目标。
 
-- 参照基线：项目首个可运行版本（commit 9a55382）。自该版本起，febid_simap 的
-  计算代码未再改动；本次唯一改写到计算路径的是“扩散步”（由 numpy 路线改为
-  numba 融合内核），故对该步做 head-to-head 对比以量化提升。
+- 参照基线：项目首个可运行版本（commit 9a55382）。当前计算代码与该基线完全一致，
+  相对基线的性能变化为 0%；扩散步另附一组与基线建立之前原始设计（numpy 路线）
+  的对照实验，作为基线本身相对原始设计的提升记录。
 - 逐步骤耗时：在 150×150 网格上分别测量“通量图 / 反应步 / 扩散步”的每步耗时。
 - 体系随一致性测试的标准体系表（当前为沉积 PSM_DEPO）。
 
@@ -140,8 +140,9 @@ def main():
     for k, acc in results.items():
         print(f"\n[{k} · {SYSTEMS[k]['kind']}] 每步 {acc['total']:.1f} us"
               f"  (通量 {acc['flux']:.1f} / 反应 {acc['react']:.1f} / 扩散 {acc['diff']:.1f})")
-    print(f"\n扩散步单核对比：numba {t_numba:.2f} us vs numpy {t_numpy:.2f} us"
-          f"  → 提升 {t_numpy / t_numba:.2f}×")
+    print(f"\n扩散步对照（原始设计 numpy 路线 vs 基线内核）："
+          f"numpy {t_numpy:.2f} us vs numba {t_numba:.2f} us（{t_numpy / t_numba:.2f}×，"
+          f"系基线建立时取得；本次相对基线为 0%）")
 
     write_report(results, t_numba, t_numpy)
     print(f"\n报告已写入：{REPORT_PATH}")
@@ -162,9 +163,10 @@ def write_report(results, t_numba, t_numpy):
     L.append("# 性能基准与优化分析（沉积）")
     L.append("")
     L.append(f"参照基线：项目首个可运行版本（commit `{BASELINE_COMMIT}`）。"
-             "自该版本起 `febid_simap` 的计算代码未再改动，因此“反应步 / 通量图 / 快照”"
-             "与原版**逐字一致（提升 0%）**；本次唯一改写到计算路径的是**扩散步**，"
-             "下文对其单独做 head-to-head 对比。")
+             "**当前计算代码与该基线完全一致，未做任何计算改动，"
+             "故本次相对基线的性能变化为 0%**——下表各步骤耗时即基线各步骤耗时。"
+             "扩散步另附一组与基线建立之前原始设计（numpy 路线）的对照实验，"
+             "作为基线本身相对原始设计的提升记录，非本次改动的提升。")
     L.append("")
     L.append("## 测量设置")
     L.append("")
@@ -188,12 +190,15 @@ def write_report(results, t_numba, t_numpy):
     totals = " | ".join(f"**{results[k]['total']:.2f}** | 100%" for k in keys)
     L.append(f"| **合计（每步）** | {totals} |")
     L.append("")
-    L.append("## 扩散步：对比原版提升")
+    L.append("## 附：扩散步对照实验（基线 vs 原始设计的 numpy 路线）")
     L.append("")
-    L.append(f"- 原版 numpy 向量化路线：**{t_numpy:.2f} us / 次**")
-    L.append(f"- 当前 numba 融合内核：**{t_numba:.2f} us / 次**")
-    L.append(f"- **提升：约 {t_numpy / t_numba:.2f}×**（且原版扩散实为空操作、数值错误，"
-             "当前内核在更快的同时才是正确的）")
+    L.append("原始设计的扩散步走 numpy 路线，且实现存在缺陷（实际为空操作、数值错误），"
+             "无法直接计时对比；此处以其**数值正确化后的 numpy 实现**作为对照：")
+    L.append("")
+    L.append(f"- 原始设计 numpy 路线（正确化后）：**{t_numpy:.2f} us / 次**")
+    L.append(f"- 基线/当前 numba 融合内核：**{t_numba:.2f} us / 次**")
+    L.append(f"- **约 {t_numpy / t_numba:.2f}× 的差距系基线建立时取得，"
+             "计入“基线相对原始设计”的账，不属于本次改动的提升。**")
     L.append("")
     L.append("## 当前性能卡点前三项")
     L.append("")
