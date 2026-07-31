@@ -228,12 +228,12 @@ class PSMDepoConfig(BaseSurfaceProcessConfig):
     m_CrCO6: float = 220.0  # g/mol
     sigma_CrCO6: float = 0.42  # nm² (调优值)
     tau_CrCO6: float = 1.2779e-6  # s (调优值)
-    D_CrCO6: float = 1e6  # nm²/s (调优值)
+    D_CrCO6: float = 1e7  # nm²/s (调优值)
 
     # CO parameters (调优值)
     tau_CO: float = 1e-5  # s
     sigma_CO: float = 0.3  # nm² (调优值)
-    D_CO: float = 1e6  # nm²/s
+    D_CO: float = 1e7  # nm²/s
 
     # Material parameters
     M_Cr: float = 52.0  # g/mol

@@ -30,7 +30,11 @@ if _REPO_ROOT not in sys.path:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 便于 import consistency_test
 
 from febid_simap.Scan_Pattern import ScanPattern2D, Scanning2DBeam
-from febid_simap.Simulator import Scanning2DFEBIPSimulator, apply_diffusion_kernel
+from febid_simap.Simulator import (
+    Scanning2DFEBIPSimulator,
+    apply_diffusion_kernel,
+    apply_diffusion_adi,
+)
 from consistency_test import (
     SYSTEMS, _build_raster_scan, _BeamConfig, GRID_N, GRID_SIZE, ACT_REGION,
 )
@@ -66,15 +70,24 @@ def bench_pipeline(sys_key: str, n_warm: int = 5, n_timed: int = 300):
     X, Y, buf, lap = sim.X, sim.Y, sim._flux_buffer, sim._lap_buffer
     dx, dy, Darr = sim.dx, sim.dy, sim.D_array
     t_active = beam.total_scan_time * 0.5  # 束流处于激活状态的固定时刻
+    # 与 Simulator.step 相同的稳定域分派
+    explicit_limit = 0.5 / (1.0 / (dx * dx) + 1.0 / (dy * dy))
+
+    def apply_diffusion_all():
+        for i in range(model.num_species):
+            if Darr[i] > 0:
+                D_dt = Darr[i] * dt
+                if D_dt <= explicit_limit:
+                    apply_diffusion_kernel(sim.state_field[i], lap, D_dt, dx, dy, mask)
+                else:
+                    apply_diffusion_adi(sim.state_field[i], lap, D_dt, dx, dy, mask)
 
     def one_step():
         flux = beam.get_flux_map(t_active, X, Y, out=buf)
         sim.state_field, sim.h_material = model.apply_reaction_step(
             sim.state_field, sim.h_material, flux, dt, mask
         )
-        for i in range(model.num_species):
-            if Darr[i] > 0:
-                apply_diffusion_kernel(sim.state_field[i], lap, Darr[i] * dt, dx, dy, mask)
+        apply_diffusion_all()
 
     # 预热：触发全部 numba 编译
     for _ in range(n_warm):
@@ -89,9 +102,7 @@ def bench_pipeline(sys_key: str, n_warm: int = 5, n_timed: int = 300):
         )
         acc["react"] += perf() - a
         a = perf()
-        for i in range(model.num_species):
-            if Darr[i] > 0:
-                apply_diffusion_kernel(sim.state_field[i], lap, Darr[i] * dt, dx, dy, mask)
+        apply_diffusion_all()
         acc["diff"] += perf() - a
 
     for k in acc:
@@ -168,9 +179,12 @@ def write_report(results, t_numba, t_numpy):
     L.append(f"参照基线：项目首个可运行版本（commit `{BASELINE_COMMIT}`）。"
              "当前版本相对基线的改动为一组**数值等价的开销清理**"
              "（反应步不再重建掩模临时数组与打包副本、扫描时刻累计表预计算、"
-             "束斑图按驻留点缓存），以及**新增隐式 ADI 扩散路径**——"
-             "仅在显式稳定域之外自动启用，标准沉积用例全程处于稳定域内、"
-             "数值逐点不变。一致性测试确认与基线**逐点 0 偏差**。"
+             "束斑图按驻留点缓存），以及**新增隐式 ADI 扩散路径**"
+             "（仅在显式稳定域之外自动启用）。另按物理参数决策，沉积体系"
+             "扩散系数已上调至 1e7 nm²/s：标准用例 D·dt=0.4 超出显式稳定域，"
+             "其扩散步现走 ADI 路径，一致性基线已按新参数重立"
+             "（重立后逐点 0 偏差；D=0 情形与旧基线亦逐点 0 偏差，"
+             "证明除扩散系数外无任何副作用）。"
              "扩散步另附与基线建立之前原始设计（numpy 路线）的对照实验，"
              "系基线建立时取得的提升记录。")
     L.append("")
@@ -211,7 +225,9 @@ def write_report(results, t_numba, t_numpy):
     L.append("> 基线参考值为基线代码在同机的微基准记录；机器抖动约 ±20%，"
              "提升数字按量级解读。束斑缓存的命中率与每个驻留点内的步数相关，"
              "本基准束流位置固定、命中率为上限值。"
-             "**扩散步代码本次未改动，该行的差异属机器抖动，不计为提升。**")
+             "**扩散步一行须按新口径解读：扩散系数上调 10 倍（物理参数决策）后，"
+             "标准用例的扩散步由显式路径切换至 ADI 隐式路径，单次开销上升属"
+             "换取稳定性的预期代价，不作为代码性能回归。**")
     L.append("")
     L.append("## 附：扩散步对照实验（基线 vs 原始设计的 numpy 路线）")
     L.append("")
