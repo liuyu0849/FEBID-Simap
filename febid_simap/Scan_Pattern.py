@@ -256,6 +256,50 @@ class Scanning2DBeam:
         )
         return b["point_indices"][idx], False
 
+    def _locate_subloop(self, t: float) -> int:
+        """定位 t 所在子环（缓存命中则直接返回，否则二分查找并更新缓存）。"""
+        if (
+            self._cache_subloop_id < len(self.time_boundaries)
+            and self.time_boundaries[self._cache_subloop_id]["start_time"]
+            <= t
+            < self.time_boundaries[self._cache_subloop_id]["end_time"]
+        ):
+            return self._cache_subloop_id
+        left, right = 0, len(self.time_boundaries) - 1
+        while left < right:
+            mid = (left + right) // 2
+            if t < self.time_boundaries[mid]["end_time"]:
+                right = mid
+            else:
+                left = mid + 1
+        self._cache_subloop_id = left
+        return left
+
+    def next_boundary_time(self, t: float) -> float:
+        """返回 t 之后最近的驻留点边界（或刷新段结束）的绝对时刻。
+
+        供自动步长切齐使用：返回绝对时刻而非剩余时长，使调用方能把 t 精确
+        赋值为边界值，避免浮点累加留下残步。边界时刻与 _time_to_point_index
+        使用同一套累计表，保证切齐后的 t 落在下一驻留点上。
+        """
+        if t >= self.total_scan_time:
+            return self.total_scan_time
+
+        if self.frt is None:
+            idx = min(
+                np.searchsorted(self._cum_dwell, t, side="right"), self.n_points - 1
+            )
+            return float(self._cum_dwell[idx])
+
+        b = self.time_boundaries[self._locate_subloop(t)]
+        t_sub = t - b["start_time"]
+        if t_sub >= (b["scan_end_time"] - b["start_time"]):
+            return float(b["end_time"])
+        idx = min(
+            np.searchsorted(b["cum_dwell"], t_sub, side="right"), b["n_points"] - 1
+        )
+        return float(b["start_time"] + b["cum_dwell"][idx])
+
     def get_beam_position(self, t: float):
         idx, waiting = self._time_to_point_index(t)
         return (None, False) if idx is None else (self.scan_path[idx], not waiting)

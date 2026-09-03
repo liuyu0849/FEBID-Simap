@@ -215,8 +215,12 @@ class Scanning2DFEBIPSimulator:
         print(f"  Grid: {nx} x {ny} = {nx * ny} points")
         print(f"  Custom surface: {self.use_custom_surface}")
 
-    def step(self, dt: float, flux_map: np.ndarray):
-        """执行单步时间演化（通用版本）"""
+    def step(self, dt: float, flux_map: np.ndarray, force_adi: bool = False):
+        """执行单步时间演化（通用版本）
+
+        force_adi=True 时扩散步一律走隐式 ADI（二阶精度），不再按稳定域分派到
+        显式欧拉（一阶精度）；自动步长模式默认启用，固定步长模式保持原分派。
+        """
 
         # 1. 表面反应 (通过注册表模型接口)
         self.state_field, self.h_material = self.model.apply_reaction_step(
@@ -229,7 +233,7 @@ class Scanning2DFEBIPSimulator:
         for i in range(self.model.num_species):
             if self.D_array[i] > 0:
                 D_dt = self.D_array[i] * dt
-                if D_dt <= explicit_limit:
+                if D_dt <= explicit_limit and not force_adi:
                     apply_diffusion_kernel(
                         self.state_field[i],
                         self._lap_buffer,
@@ -257,13 +261,43 @@ class Scanning2DFEBIPSimulator:
         vtk_save_every_n_points: int = None,
         vtk_output_dir: str = None,
         concentration_analyzer=None,
+        dt_mode: str = "fixed",
+        dt_rxn_factor: float = 0.5,
+        dt_max: float = None,
+        dt_diff_r_max: float = 2.5,
+        force_adi: bool = None,
     ):
+        """运行扫描仿真。
+
+        步长模式（dt_mode）：
+        - "fixed"：固定步长，束开时用 dt，刷新等待段用 dt·frt_dt_multiplier（原有行为）；
+        - "auto"：自动步长。每步取
+              dt = min( dt_rxn_factor / B_max,  dt_diff_r_max · min(dx,dy)² / D_max,  dt_max )
+          其中 B_max 为模型给出的反应速率上界（束开时用全场峰值通量，束关时通量为 0），
+          D_max 为最大扩散系数；第二项是扩散步的精度上限（r = D·dt/dx² ≤ dt_diff_r_max，
+          ADI 无条件稳定，但一步扩散过远会抹平束斑尺度的特征），传 None 关闭。
+          随后按驻留点边界切齐：边界前的剩余时长被等分为若干子步，末子步精确落在
+          边界上。模型未提供速率上界时退回固定步长。
+        扩散格式（force_adi）：None 表示自动模式一律走二阶 ADI、固定模式按稳定域分派
+        （原有行为）；显式指定 True/False 可覆盖。
+        """
 
         total_time = self.beam.total_scan_time
         dt_frt = (
             dt * frt_dt_multiplier
             if getattr(self.beam, "frt", None) is not None
             else dt
+        )
+        if dt_mode not in ("fixed", "auto"):
+            raise ValueError(f"Unknown dt_mode: {dt_mode!r} (expected 'fixed' or 'auto')")
+        auto_dt = dt_mode == "auto"
+        if force_adi is None:
+            force_adi = auto_dt
+        D_max = float(np.max(self.D_array)) if len(self.D_array) else 0.0
+        dt_diff_cap = (
+            dt_diff_r_max * min(self.dx, self.dy) ** 2 / D_max
+            if (auto_dt and dt_diff_r_max is not None and D_max > 0)
+            else None
         )
 
         vtk_saver = None
@@ -316,12 +350,34 @@ class Scanning2DFEBIPSimulator:
             # 使用预分配 Buffer 获取光束通量
             flux_map = self.beam.get_flux_map(t, self.X, self.Y, out=self._flux_buffer)
 
-            current_dt = (
-                dt_frt
-                if is_waiting and getattr(self.beam, "frt", None) is not None
-                else dt
-            )
-            current_dt = min(current_dt, total_time - t)
+            # 步长选取：auto 模式按反应速率上界取步并切齐驻留边界；fixed 模式保持原逻辑
+            snap_to_boundary = None
+            B_max = None
+            if auto_dt:
+                B_max = self.model.get_reaction_rate_bound(
+                    float(flux_map.max()), self.state_field
+                )
+            if B_max is not None:
+                dt_bound = dt_rxn_factor / B_max
+                if dt_diff_cap is not None:
+                    dt_bound = min(dt_bound, dt_diff_cap)
+                if dt_max is not None:
+                    dt_bound = min(dt_bound, dt_max)
+                boundary = min(self.beam.next_boundary_time(t), total_time)
+                if boundary <= t:
+                    boundary = total_time
+                seg = boundary - t
+                n_sub = max(1, int(np.ceil(seg / dt_bound - 1e-9)))
+                current_dt = seg / n_sub
+                if n_sub == 1:
+                    snap_to_boundary = boundary
+            else:
+                current_dt = (
+                    dt_frt
+                    if is_waiting and getattr(self.beam, "frt", None) is not None
+                    else dt
+                )
+                current_dt = min(current_dt, total_time - t)
 
             if (
                 point_idx is not None
@@ -332,7 +388,7 @@ class Scanning2DFEBIPSimulator:
                 if vtk_saver and vtk_saver.should_save(current_point_idx):
                     vtk_saver.save(current_point_idx, t, self)
 
-            self.step(current_dt, flux_map)
+            self.step(current_dt, flux_map, force_adi=force_adi)
 
             if concentration_analyzer is not None:
                 concentration_analyzer.record(t, self, point_idx)
@@ -346,7 +402,7 @@ class Scanning2DFEBIPSimulator:
                 for i, species_name in enumerate(self.model.species_names):
                     snapshots[f"n_{species_name}"].append(self.state_field[i].copy())
 
-            t += current_dt
+            t = snap_to_boundary if snap_to_boundary is not None else t + current_dt
             step += 1
             save_counter += 1
             pbar.update(current_dt)

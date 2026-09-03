@@ -111,6 +111,36 @@ def bench_pipeline(sys_key: str, n_warm: int = 5, n_timed: int = 300):
     return acc
 
 
+def bench_end_to_end(sys_key: str, frt=None):
+    """端到端：同一扫描下固定步长与自动步长的总步数与总耗时（预热后计时）。"""
+    import io, contextlib
+    cfg = SYSTEMS[sys_key]
+    out = {}
+    for mode in ("fixed", "auto"):
+        params = cfg["params_cls"]()
+        params.dt = cfg["dt"]
+        pos, dw = _build_raster_scan()
+        pat = ScanPattern2D.from_external_data(pos, GRID_SIZE, _BeamConfig(*cfg["sigma"]))
+        beam = Scanning2DBeam(cfg["beam"], pat, dwell_time_array=dw, frt=frt)
+        sim = Scanning2DFEBIPSimulator(
+            params, beam, GRID_SIZE, GRID_N, GRID_N, etch_region=ACT_REGION
+        )
+        # 预热：跑一次短仿真触发编译
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            sim.step(params.dt, beam.get_flux_map(0.0, sim.X, sim.Y, out=sim._flux_buffer))
+        sim.state_field, sim.h_material = sim.model.init_state(GRID_N, GRID_N)
+        buf = io.StringIO()
+        a = perf()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            sim.run_scanning(dt=params.dt, save_interval=10 ** 12, dt_mode=mode)
+        wall = perf() - a
+        # 步数取自模拟器完成时打印的 “Total steps: N”
+        import re
+        m = re.search(r"Total steps:\s*(\d+)", buf.getvalue())
+        out[mode] = {"wall": wall, "steps": int(m.group(1)) if m else None}
+    return out
+
+
 def numpy_diffusion(field, D_dt, dx, dy):
     """原始代码采用的 numpy 路线（此处为其数值正确版本，用于公平对比）。"""
     p = np.pad(field, 1, mode="edge")
@@ -150,6 +180,11 @@ def main():
 
     results = {k: bench_pipeline(k) for k in SYSTEMS}
     t_numba, t_numpy = bench_diffusion_step()
+    e2e = {"无刷新段": bench_end_to_end("PSM_DEPO"),
+           "含刷新段 frt=20us": bench_end_to_end("PSM_DEPO", frt=2.0e-5)}
+    for name, r in e2e.items():
+        print(f"\n端到端（{name}）：固定 {r['fixed']['wall']:.2f} s vs 自动 {r['auto']['wall']:.2f} s"
+              f"（{r['fixed']['wall'] / r['auto']['wall']:.2f}×）")
 
     for k, acc in results.items():
         print(f"\n[{k} · {SYSTEMS[k]['kind']}] 每步 {acc['total']:.1f} us"
@@ -158,12 +193,12 @@ def main():
           f"numpy {t_numpy:.2f} us vs numba {t_numba:.2f} us（{t_numpy / t_numba:.2f}×，"
           f"系基线建立时取得；本次相对基线为 0%）")
 
-    write_report(results, t_numba, t_numpy)
+    write_report(results, t_numba, t_numpy, e2e)
     print(f"\n报告已写入：{REPORT_PATH}")
     return 0
 
 
-def write_report(results, t_numba, t_numpy):
+def write_report(results, t_numba, t_numpy, e2e=None):
     # 跨体系平均的阶段占比，用于排名
     stages = ["react", "diff", "flux"]
     label = {"react": "反应步（逐点 RK4）", "diff": "扩散步（显式欧拉 + 拉普拉斯）",
@@ -229,6 +264,22 @@ def write_report(results, t_numba, t_numpy):
              "标准用例的扩散步由显式路径切换至 ADI 隐式路径，单次开销上升属"
              "换取稳定性的预期代价，不作为代码性能回归。**")
     L.append("")
+    if e2e:
+        L.append("## 端到端：固定步长 vs 自动步长（PSM_DEPO，同一扫描）")
+        L.append("")
+        L.append("| 场景 | 固定步长 步数 / 耗时 | 自动步长 步数 / 耗时 | 耗时比（固定/自动） |")
+        L.append("| --- | --- | --- | --- |")
+        for name, r in e2e.items():
+            L.append(f"| {name} | {r['fixed']['steps']} / {r['fixed']['wall']:.2f} s | "
+                     f"{r['auto']['steps'] if r['auto']['steps'] else '—'} / {r['auto']['wall']:.2f} s | "
+                     f"{r['fixed']['wall'] / r['auto']['wall']:.2f}× |")
+        L.append("")
+        L.append("> 自动步长按反应速率上界与扩散精度上限取步并切齐驻留边界，束开段每点 3 步"
+                 "（固定步长为 2.5 步但与驻留边界错位），刷新等待段步长放大到 2.5e-7 s"
+                 "（固定模式在等待段用 dt×100 = 4e-6 s，对 Cr(CO)6 脱附 B·dt = 3.1，已越过 RK4 稳定极限 2.785）。"
+                 "无刷新段时自动模式略慢于固定模式，收益来自刷新段与束关闭段；"
+                 "详见 `tests/report_dt_sweep.md` 的参数扫描与收敛性验证。")
+        L.append("")
     L.append("## 附：扩散步对照实验（基线 vs 原始设计的 numpy 路线）")
     L.append("")
     L.append("原始设计的扩散步走 numpy 路线，且实现存在缺陷（实际为空操作、数值错误），"
@@ -286,9 +337,11 @@ def write_report(results, t_numba, t_numpy):
              "把“画一整幅图”的代价降为“画两条线”。")
     L.append("")
     L.append("**总纲：近期主攻‘单步’，中期夺回‘步数’。**  ")
-    L.append("实测表明直接放大时间步会因束流驻留与步长不对齐而引入约 20% 的曝光误差，"
-             "故“减步数”须先解决对齐问题（按驻留边界切齐步长）后方可推进；"
-             "在此之前，单步内的等价清理与上述三项是主要抓手。")
+    L.append("实测表明直接放大时间步会因束流驻留与步长不对齐而引入约 20% 的曝光误差；"
+             "自动步长模式（dt_mode=\"auto\"）已把步长按驻留边界切齐，并按反应速率上界与扩散精度上限"
+             "自动取步：束开段步长贴着精度边界走，束关闭与刷新段步长自动放大，"
+             "‘步数’这一卡点在含刷新段的工艺中由此收回一部分。剩余空间在束开段：反应精确解路线"
+             "可把束开段步长放大到驻留时长，仍待专项决策。")
 
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")

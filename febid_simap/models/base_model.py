@@ -41,6 +41,18 @@ class BaseSurfaceModel:
             f"{self.system_type} must implement get_diffusion_coefficients()"
         )
 
+    def get_reaction_rate_bound(self, f_max: float, state_field: np.ndarray):
+        """返回反应步线性化速率常数的全场上界 B_max [1/s]（用于自动步长）。
+
+        自动步长按 dt = C / B_max 取步，C 为安全系数。返回 None 表示本模型
+        未提供上界，自动步长对该模型退回固定 dt。
+
+        Args:
+            f_max: 当前步全场最大电子通量（束关闭时为 0）
+            state_field: (num_species, ny, nx) 当前浓度场（供状态相关项估计上界）
+        """
+        return None
+
     def apply_reaction_step(
         self,
         state_field: np.ndarray,

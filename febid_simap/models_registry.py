@@ -400,6 +400,15 @@ class PSMModel(BaseSurfaceModel):
         """返回 PSM 扩散系数"""
         return np.array([self.params.D_XeF2, self.params.D_F])
 
+    def get_reaction_rate_bound(self, f_max: float, state_field: np.ndarray) -> float:
+        """PSM 刻蚀反应速率上界：XeF2 为线性项；F 的消耗项 10·k·n_F^10 线性化后
+        为 100·k·n_F^9·Θ（Θ ≤ 1），用全场 n_F 最大值取上界。"""
+        p = self.params
+        B_XeF2 = p.s_XeF2 * p.Phi_XeF2 / p.n_sites + p.tau_XeF2_inv + p.sigma_XeF2 * f_max
+        nF_max = float(state_field[1].max())
+        B_F = p.tau_F_inv + 100.0 * p.k_MoSiF10 * nF_max**9
+        return max(B_XeF2, B_F)
+
     def apply_reaction_step(
         self,
         state_field: np.ndarray,
@@ -476,6 +485,16 @@ class PSMDepoModel(BaseSurfaceModel):
     def get_diffusion_coefficients(self) -> np.ndarray:
         """返回 PSM 沉积扩散系数"""
         return np.array([self.params.D_CrCO6, self.params.D_CO])
+
+    def get_reaction_rate_bound(self, f_max: float, state_field: np.ndarray) -> float:
+        """PSM 沉积反应速率上界：束流冻结的单步内本体系为线性系统，
+        特征值即对角项 B = sΦ/N + 1/τ + σ·f，逐物种取最大。"""
+        p = self.params
+        B_CrCO6 = (
+            p.s_CrCO6 * p.Phi_CrCO6 / p.n_sites + p.tau_CrCO6_inv + p.sigma_CrCO6 * f_max
+        )
+        B_CO = p.tau_CO_inv + p.sigma_CO * f_max
+        return max(B_CrCO6, B_CO)
 
     def apply_reaction_step(
         self,
