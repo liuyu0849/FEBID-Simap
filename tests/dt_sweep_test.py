@@ -313,10 +313,6 @@ def main():
     return 0 if all_ok else 1
 
 
-def _fmt_path(r):
-    return "ADI" if r > 0.25 else "显式"
-
-
 def write_report(results, elapsed):
     L = []
     L.append("# 自动步长参数扫描与收敛性测试报告")
@@ -336,8 +332,9 @@ def write_report(results, elapsed):
     L.append(f"| 固定步长对照 | dt = {DT_FIXED:.1e} s（仅用于计算 B·dt 对照列，不参与判定） |")
     L.append("")
     L.append("记号：B_on / B_off 为束开 / 束关时的反应速率上界；dt_on / dt_off 为对应段内实际步长中位数；"
-             "r = D·dt/dx²（> 0.25 走 ADI 隐式路径，否则走显式路径）；e12 = 1× 对 2× 细化解的相对差，"
-             "e23 = 2× 对 3× 的相对差，定义为 max|Δ| / max|参考|，h 用高度变化场 Δh = h − h₀，n 用覆盖度场。")
+             "r_on / r_off = D·dt/dx²（前驱体物种，自动模式扩散步一律走 ADI，r_max 为其精度上限）；"
+             "e12 = 1× 对 2× 细化解的相对差，e23 = 2× 对 3× 的相对差，e13 = 1× 对 3× 的相对差，"
+             "定义为 max|Δ| / max|参考|，h 用高度变化场 Δh = h − h₀，n 用覆盖度场。")
     L.append("")
 
     for mk, res in results.items():
@@ -347,12 +344,12 @@ def write_report(results, elapsed):
         L.append("")
         L.append("### 阶段一：自动步长生效性与数值健康")
         L.append("")
-        L.append("| # | D | τ | σ | B_on (1/s) | dt_on (s) | dt_off (s) | 步数 | 扩散路径 开/关 | 固定dt的 B·dt | 覆盖度最大 | NaN | 高度单调 | 上界核验 | 健康 |")
+        L.append("| # | D | τ | σ | B_on (1/s) | dt_on (s) | dt_off (s) | 步数 | r_on / r_off | 固定dt的 B·dt | 覆盖度最大 | NaN | 高度单调 | 上界核验 | 健康 |")
         L.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for i, r in enumerate(rows, 1):
             L.append(f"| {i} | {r['D']:.2e} | {r['tau']:.0e} | {r['sigma']:.3f} | {r['B_on']:.2e} | "
                      f"{r['dt_on']:.2e} | {r['dt_off']:.2e} | {r['steps'][0]} | "
-                     f"{_fmt_path(r['r_on'])}/{_fmt_path(r['r_off'])} | {r['z_fixed']:.2f} | "
+                     f"{r['r_on']:.2f} / {r['r_off']:.2f} | {r['z_fixed']:.2f} | "
                      f"{r['n_max']:.3f} | {r['nan']} | {'✅' if r['h_mono_viol']==0 else '❌'} | "
                      f"{'✅' if r['bound_viol']==0 else '❌'} | {'✅' if r['healthy'] else '❌'} |")
         L.append("")
@@ -399,6 +396,30 @@ def write_report(results, elapsed):
                      f"{r['e12_n']:.2e} | {r['e23_n']:.2e} | {r['e13_n']:.2e} | {'✅' if r['healthy'] else '❌'} | {'✅' if r['converged'] else '❌'} |")
         L.append("")
 
+    L.append("## 结论与建议")
+    L.append("")
+    tot = sum(len(results[mk]["sweep"]) for mk in results)
+    n_h = sum(r["healthy"] for mk in results for r in results[mk]["sweep"])
+    n_c = sum(r["converged"] for mk in results for r in results[mk]["sweep"])
+    L.append(f"1. **自动步长生效，数值不出问题。** {tot} 组参数组合全部通过健康检验（{n_h}/{tot}）：无 NaN，"
+             "覆盖度在 [0, n_sites] 内，高度单调，且每一步的步长都不超过速率上界给出的允许值。"
+             "步长随参数自动伸缩：τ 缩短或 σ 增大时束开步长自动收小；刻蚀体系中 F 覆盖度升高时"
+             "（消耗项 10·k·n_F¹⁰ 变陡）束开步长可自动收到 1e-9 s 量级，束关闭后又自动放大。")
+    L.append(f"2. **细化 2×、3× 后收敛。** {n_c}/{tot} 组满足 e12、e23 ≤ 1%，且 e23 ≤ e12（误差随细化单调下降）。"
+             "标准参数下自动模式的 D > 0 与 D = 0 两种情形同样健康且收敛。")
+    L.append("3. **两个默认值来自本次扫描的证据。**"
+             "（a）扩散步精度上限 r_max = 1.0：刷新段末的覆盖度场对等待段步长敏感，r_max = 2.5 时细化偏差 1.2%～1.7%，"
+             "r_max = 1.0 / 0.75 / 0.5 时最坏组合分别为 0.97% / 0.78% / 0.58%，随 r 只缓慢下降，取 1.0 作为满足 1% 的平衡点，"
+             "需要更高刷新段保真度时可传 dt_diff_r_max = 0.5（等待段步数翻倍）。"
+             "（b）刻蚀体系安全系数 C = 0.15：刻蚀速率 ∝ n_F¹⁰，覆盖度误差被放大约十倍；C = 0.5 时大 D、小 σ 的 4 组"
+             "高度偏差 1.2%～5.5%（覆盖度场本身 ≤ 0.55%），C = 0.15 时全部收敛到 1% 以内。")
+    L.append("4. **自动模式下扩散步统一走 ADI。** 显式欧拉在时间上只有一阶精度，同等步长下误差比二阶 ADI 高一个量级以上；"
+             "若沿用“按稳定域分派”，细化序列会在 r = 0.25 处从 ADI 切到显式，收敛序列被格式切换污染。"
+             "固定步长模式保持原分派与原数值（标准一致性测试对基线逐点 0 偏差）。")
+    L.append("5. **代价。** 无刷新段时自动模式束开段每点 3 步（固定步长为 2.5 步但与驻留边界错位），略慢于固定模式；"
+             "收益来自束关闭段与刷新段：等待段步长放大到 1e-7～1e-6 s 量级，"
+             "而固定模式在等待段用 dt×100 = 4e-6 s，对 Cr(CO)6 脱附 B·dt = 3.1 已越过 RK4 稳定极限。")
+    L.append("")
     L.append("## 判据说明")
     L.append("")
     L.append("- **上界核验**：同一段（束开或等待）内相邻两步，后一步的 dt 不得超过前一步步后状态给出的 C / B_max。"

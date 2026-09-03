@@ -111,7 +111,7 @@ def bench_pipeline(sys_key: str, n_warm: int = 5, n_timed: int = 300):
     return acc
 
 
-def bench_end_to_end(sys_key: str, frt=None):
+def bench_end_to_end(sys_key: str, frt=None, frt_dt_multiplier=100):
     """端到端：同一扫描下固定步长与自动步长的总步数与总耗时（预热后计时）。"""
     import io, contextlib
     cfg = SYSTEMS[sys_key]
@@ -132,7 +132,8 @@ def bench_end_to_end(sys_key: str, frt=None):
         buf = io.StringIO()
         a = perf()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
-            sim.run_scanning(dt=params.dt, save_interval=10 ** 12, dt_mode=mode)
+            sim.run_scanning(dt=params.dt, save_interval=10 ** 12, dt_mode=mode,
+                             frt_dt_multiplier=frt_dt_multiplier)
         wall = perf() - a
         # 步数取自模拟器完成时打印的 “Total steps: N”
         import re
@@ -181,7 +182,8 @@ def main():
     results = {k: bench_pipeline(k) for k in SYSTEMS}
     t_numba, t_numpy = bench_diffusion_step()
     e2e = {"无刷新段": bench_end_to_end("PSM_DEPO"),
-           "含刷新段 frt=20us": bench_end_to_end("PSM_DEPO", frt=2.0e-5)}
+           "含刷新段 frt=20us（固定模式等待段 dt×100，越过 RK4 稳定极限）": bench_end_to_end("PSM_DEPO", frt=2.0e-5),
+           "含刷新段 frt=20us（固定模式等待段 dt×1，稳定）": bench_end_to_end("PSM_DEPO", frt=2.0e-5, frt_dt_multiplier=1)}
     for name, r in e2e.items():
         print(f"\n端到端（{name}）：固定 {r['fixed']['wall']:.2f} s vs 自动 {r['auto']['wall']:.2f} s"
               f"（{r['fixed']['wall'] / r['auto']['wall']:.2f}×）")
@@ -274,9 +276,10 @@ def write_report(results, t_numba, t_numpy, e2e=None):
                      f"{r['auto']['steps'] if r['auto']['steps'] else '—'} / {r['auto']['wall']:.2f} s | "
                      f"{r['fixed']['wall'] / r['auto']['wall']:.2f}× |")
         L.append("")
-        L.append("> 自动步长按反应速率上界与扩散精度上限取步并切齐驻留边界，束开段每点 3 步"
-                 "（固定步长为 2.5 步但与驻留边界错位），刷新等待段步长放大到 2.5e-7 s"
-                 "（固定模式在等待段用 dt×100 = 4e-6 s，对 Cr(CO)6 脱附 B·dt = 3.1，已越过 RK4 稳定极限 2.785）。"
+        L.append("> 自动步长按反应速率上界与扩散精度上限（r_max = 1.0）取步并切齐驻留边界，束开段每点 3 步"
+                 "（固定步长为 2.5 步但与驻留边界错位），刷新等待段步长放大到 1e-7 s。"
+                 "固定模式默认在等待段用 dt×100 = 4e-6 s，对 Cr(CO)6 脱附 B·dt = 3.1，已越过 RK4 稳定极限 2.785，"
+                 "该行的“更快”不成立；与稳定的固定模式（等待段用 dt）相比，自动模式步数更少。"
                  "无刷新段时自动模式略慢于固定模式，收益来自刷新段与束关闭段；"
                  "详见 `tests/report_dt_sweep.md` 的参数扫描与收敛性验证。")
         L.append("")
