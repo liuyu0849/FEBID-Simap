@@ -380,6 +380,9 @@ class PSMModel(BaseSurfaceModel):
     process_type = "etching"
     system_type = "PSM_ETCH"
     species_names = ["XeF2", "F"]
+    # 刻蚀速率 ∝ n_F^10，覆盖度误差被放大约十倍；参数扫描表明 C = 0.5 时大 D、小 σ 组合的
+    # 高度偏差可达 5%，C = 0.15 时全部收敛到 1% 以内（见 tests/report_dt_sweep.md）
+    dt_rxn_factor_default = 0.15
 
     def init_state(self, ny: int, nx: int) -> Tuple[np.ndarray, np.ndarray]:
         """初始化 PSM 系统状态"""

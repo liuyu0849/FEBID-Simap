@@ -10,7 +10,7 @@
   施加在前驱体物种上（PSM_DEPO 的 Cr(CO)6、PSM_ETCH 的 XeF2），中间产物保持默认参数。
   每组以自动步长运行一次，记录束开/束关步长、步数、扩散路径与健康指标，并核验实际
   步长不超过速率上界给出的允许值（自动步长确实生效）。
-- 阶段二（收敛性）：对每组参数把步长细化 2 倍与 3 倍（安全系数 C 取 0.5、0.25、0.167），
+- 阶段二（收敛性）：对每组参数把步长细化 2 倍与 3 倍（安全系数 C 与扩散步上限 r_max 同步取 1/k），
   比较 1×、2×、3× 三个解的高度变化场与覆盖度场，要求 e12 与 e23 均 ≤ 1%。
   非负截断会掩盖不稳定，只有细化对比才能揭示，故以此作为决定性判据。
 - 附：标准参数下自动模式的 D > 0 与 D = 0 两种情形，按开发规范第 3 条覆盖。
@@ -52,11 +52,10 @@ DWELL = 1.0e-7                          # 每点驻留 0.1 us
 FRT = 2.0e-5                            # 刷新周期：扫描 10 us + 等待 10 us
 DT_FIXED = 0.4e-7                       # 固定步长参考值（用于对照列）
 
-DT_FACTOR = 0.5                         # 自动步长安全系数 C
-R_MAX = 2.5                             # 扩散步精度上限 r_max = D·dt/dx²
+R_MAX = 1.0                             # 扩散步精度上限 r_max = D·dt/dx²（与模拟器默认一致）
 REFINE = (1, 2, 3)                      # 细化倍数：C / k 与 r_max / k 同步缩小
 TOL = 0.01                              # 收敛阈值 1%
-TIGHT_FACTOR = 0.15                     # 未收敛组的复验安全系数
+TIGHT_RATIO = 0.3                       # 未收敛组复验时安全系数再乘以该比例
 
 SWEEP_D = np.logspace(6, 7, 3)                        # 1e6, 3.16e6, 1e7 nm²/s
 SWEEP_TAU = np.logspace(-7, -5, 3)                    # 1e-7, 1e-6, 1e-5 s
@@ -73,6 +72,7 @@ MODELS = {
         "sigma_beam": (4.0, 4.0),
         "species": ["CrCO6", "CO"],
         "h_sign": +1,                     # 沉积：高度只增
+        "factor": 0.5,                    # 自动步长安全系数 C（与模型默认 dt_rxn_factor_default 一致）
     },
     "PSM_ETCH": {
         "kind": "刻蚀",
@@ -84,6 +84,7 @@ MODELS = {
         "sigma_beam": (2.5, 4.0),
         "species": ["XeF2", "F"],
         "h_sign": -1,                     # 刻蚀：高度只减
+        "factor": 0.15,                   # 刻蚀速率 ∝ n_F^10，覆盖度误差放大十倍，取更紧的 C
     },
 }
 
@@ -208,9 +209,11 @@ def rel_err(a, b):
     return float(np.abs(a - b).max() / denom)
 
 
-def evaluate(model_key, params, label, factor=DT_FACTOR):
+def evaluate(model_key, params, label, factor=None):
     """跑 1×/2×/3× 三个细化级别（C 与 r_max 同步缩小 k 倍），返回一行汇总结果。"""
     cfg = MODELS[model_key]
+    if factor is None:
+        factor = cfg["factor"]
     runs = {k: run_case(model_key, params, factor / k, R_MAX / k) for k in REFINE}
     r1, r2, r3 = runs[1], runs[2], runs[3]
     e12_h = rel_err(r1["dh"], r2["dh"]); e23_h = rel_err(r2["dh"], r3["dh"])
@@ -276,9 +279,9 @@ def main():
             if row["converged"]:
                 continue
             t_row = evaluate(mk, make_params(mk, row["D"], row["tau"], row["sigma"]),
-                             row["label"] + "-tight", factor=TIGHT_FACTOR)
+                             row["label"] + "-tight", factor=MODELS[mk]["factor"] * TIGHT_RATIO)
             tightened.append(t_row)
-            print(f"[{mk} 复验 C={TIGHT_FACTOR}] D={row['D']:.2e} tau={row['tau']:.1e} sigma={row['sigma']:.3f} "
+            print(f"[{mk} 复验 C={t_row['factor']:.3g}] D={row['D']:.2e} tau={row['tau']:.1e} sigma={row['sigma']:.3f} "
                   f"dt_on={t_row['dt_on']:.2e} steps={t_row['steps']} e12_h={t_row['e12_h']:.2e} "
                   f"e23_h={t_row['e23_h']:.2e} {'收敛' if t_row['converged'] else '未收敛'}")
         std = {
@@ -303,8 +306,8 @@ def main():
     tight_ok = all(r["converged"] for mk in results for r in results[mk]["tightened"])
     all_ok = all_healthy and (all_conv or tight_ok)
     print(f"\n健康：{'全部通过' if all_healthy else '存在异常'}；"
-          f"收敛（C={DT_FACTOR}）：{'全部通过' if all_conv else '存在未收敛组'}"
-          f"{'' if all_conv else f'；未收敛组以 C={TIGHT_FACTOR} 复验：' + ('全部收敛' if tight_ok else '仍有未收敛')}")
+          f"收敛（模型默认 C）：{'全部通过' if all_conv else '存在未收敛组'}"
+          f"{'' if all_conv else '；未收敛组以 C×0.3 复验：' + ('全部收敛' if tight_ok else '仍有未收敛')}")
     print(f"\n总判定：{'全部通过' if all_ok else '存在未通过项'}")
     print(f"报告已写入：{REPORT_PATH}")
     return 0 if all_ok else 1
@@ -328,7 +331,7 @@ def write_report(results, elapsed):
     L.append("| 体系 | PSM_DEPO（沉积）、PSM_ETCH（刻蚀） |")
     L.append(f"| 扫描轴 | D = {', '.join(f'{v:.2e}' for v in SWEEP_D)} nm²/s；τ = {', '.join(f'{v:.0e}' for v in SWEEP_TAU)} s；σ = {', '.join(f'{v:.3f}' for v in SWEEP_SIGMA)} nm²（各轴 logspace 3 点，共 27 组） |")
     L.append("| 参数施加对象 | 前驱体物种（Cr(CO)6 / XeF2）；中间产物（CO / F）保持默认 |")
-    L.append(f"| 自动步长 | dt = min(C / B_max, r_max·dx²/D_max) 并按驻留边界切齐；C = {DT_FACTOR}，r_max = {R_MAX}；扩散步一律 ADI；细化级别 k = 1、2、3 时 C 与 r_max 同步取 1/k |")
+    L.append(f"| 自动步长 | dt = min(C / B_max, r_max·dx²/D_max) 并按驻留边界切齐；C 取模型默认值（PSM_DEPO {MODELS['PSM_DEPO']['factor']}，PSM_ETCH {MODELS['PSM_ETCH']['factor']}），r_max = {R_MAX}；扩散步一律 ADI；细化级别 k = 1、2、3 时 C 与 r_max 同步取 1/k |")
     L.append(f"| 收敛判据 | e12 ≤ {TOL:.0%} 且 e23 ≤ {TOL:.0%}（高度变化场与覆盖度场同时满足） |")
     L.append(f"| 固定步长对照 | dt = {DT_FIXED:.1e} s（仅用于计算 B·dt 对照列，不参与判定） |")
     L.append("")
@@ -340,7 +343,7 @@ def write_report(results, elapsed):
     for mk, res in results.items():
         cfg = MODELS[mk]
         rows = res["sweep"]
-        L.append(f"## {mk}（{cfg['kind']}，扫描参数施加于 {cfg['precursor']}）")
+        L.append(f"## {mk}（{cfg['kind']}，扫描参数施加于 {cfg['precursor']}，C = {cfg['factor']}）")
         L.append("")
         L.append("### 阶段一：自动步长生效性与数值健康")
         L.append("")
@@ -376,7 +379,7 @@ def write_report(results, elapsed):
                  f"dt_off 范围 {min(r['dt_off'] for r in rows):.2e} ~ {max(r['dt_off'] for r in rows):.2e} s。")
         L.append("")
         if res["tightened"]:
-            L.append(f"### 未收敛组复验：安全系数收紧至 C = {TIGHT_FACTOR}")
+            L.append(f"### 未收敛组复验：安全系数收紧至 C = {res['tightened'][0]['factor']:.3g}")
             L.append("")
             L.append("| D | τ | σ | dt_on (s) | 步数 1×/2×/3× | e12 (Δh) | e23 (Δh) | e13 (Δh) | e12 (n) | e23 (n) | 收敛 |")
             L.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")

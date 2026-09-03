@@ -262,9 +262,9 @@ class Scanning2DFEBIPSimulator:
         vtk_output_dir: str = None,
         concentration_analyzer=None,
         dt_mode: str = "fixed",
-        dt_rxn_factor: float = 0.5,
+        dt_rxn_factor: float = None,
         dt_max: float = None,
-        dt_diff_r_max: float = 2.5,
+        dt_diff_r_max: float = 1.0,
         force_adi: bool = None,
     ):
         """运行扫描仿真。
@@ -274,7 +274,8 @@ class Scanning2DFEBIPSimulator:
         - "auto"：自动步长。每步取
               dt = min( dt_rxn_factor / B_max,  dt_diff_r_max · min(dx,dy)² / D_max,  dt_max )
           其中 B_max 为模型给出的反应速率上界（束开时用全场峰值通量，束关时通量为 0），
-          D_max 为最大扩散系数；第二项是扩散步的精度上限（r = D·dt/dx² ≤ dt_diff_r_max，
+          dt_rxn_factor 为 None 时取模型默认值 dt_rxn_factor_default（基类 0.5，PSM_ETCH 0.15）；
+          D_max 为最大扩散系数，第二项是扩散步的精度上限（r = D·dt/dx² ≤ dt_diff_r_max，
           ADI 无条件稳定，但一步扩散过远会抹平束斑尺度的特征），传 None 关闭。
           随后按驻留点边界切齐：边界前的剩余时长被等分为若干子步，末子步精确落在
           边界上。模型未提供速率上界时退回固定步长。
@@ -293,6 +294,8 @@ class Scanning2DFEBIPSimulator:
         auto_dt = dt_mode == "auto"
         if force_adi is None:
             force_adi = auto_dt
+        if dt_rxn_factor is None:
+            dt_rxn_factor = getattr(self.model, "dt_rxn_factor_default", 0.5)
         D_max = float(np.max(self.D_array)) if len(self.D_array) else 0.0
         dt_diff_cap = (
             dt_diff_r_max * min(self.dx, self.dy) ** 2 / D_max

@@ -9,6 +9,7 @@ class BaseSurfaceModel:
     process_type: str = "etching"  # 'etching' 或 'deposition'
     system_type: str = "BASE"  # 系统标识符（必须唯一）
     species_names: list = []  # 物种名称列表 ['XeF2', 'F', ...]
+    dt_rxn_factor_default: float = 0.5  # 自动步长安全系数 C 的模型默认值（dt = C / B_max）
 
     def __init__(self, params):
         """初始化模型
